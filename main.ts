@@ -621,6 +621,7 @@ export interface EquationSuggestion {
   label: string;
   formula: string;
   tag?: string;
+  offset: number;
 }
 
 export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> {
@@ -685,7 +686,6 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
 
   getSuggestions(context: EditorSuggestContext): EquationSuggestion[] {
     const content = context.editor.getValue();
-    const cursorOffset = context.editor.posToOffset(context.start);
 
     let rawPrefix = "";
     let queryAfterColon = "";
@@ -700,7 +700,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
     const query = queryAfterColon.toLowerCase().trim();
     const typedPrefix = rawPrefix.toLowerCase().trim();
 
-    const list: Array<EquationSuggestion & { offset: number }> = [];
+    const list: EquationSuggestion[] = [];
     const seenLabels = new Set<string>();
 
     const mathRegex = /\$\$([\s\S]*?)\$\$/g;
@@ -735,7 +735,9 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
       });
     }
 
-    // Sort by recency (session recent -> closest preceding -> reverse document order)
+    // Sort by recency:
+    // 1. Session recently used/added labels
+    // 2. Reverse document order: the bottom-most equations in the note are always the newest added!
     const recentList = this.plugin.recentLabels || [];
     list.sort((a, b) => {
       const aRecentIdx = recentList.indexOf(a.label);
@@ -744,14 +746,8 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
       if (aRecentIdx !== -1) return -1;
       if (bRecentIdx !== -1) return 1;
 
-      const aBefore = cursorOffset >= a.offset;
-      const bBefore = cursorOffset >= b.offset;
-      if (aBefore && bBefore) {
-        return (cursorOffset - a.offset) - (cursorOffset - b.offset);
-      }
-      if (aBefore) return -1;
-      if (bBefore) return 1;
-      return a.offset - b.offset;
+      // Pure reverse document order guarantees bottom equation (e.g. latest added) is always #1!
+      return b.offset - a.offset;
     });
 
     let filtered = list;
@@ -767,7 +763,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
         const bStarts = b.label.toLowerCase().startsWith(query);
         if (aStarts && !bStarts) return -1;
         if (!aStarts && bStarts) return 1;
-        return 0;
+        return b.offset - a.offset;
       });
     }
 
@@ -778,7 +774,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
         const bStarts = b.label.toLowerCase().startsWith(typedPrefix);
         if (aStarts && !bStarts) return -1;
         if (!aStarts && bStarts) return 1;
-        return 0;
+        return b.offset - a.offset;
       });
     }
 
@@ -850,10 +846,8 @@ export class EquationReferenceModal extends SuggestModal<EquationSuggestion> {
     const activeView = this.plugin.getActiveMarkdownView();
     if (!activeView) return [];
     const content = activeView.editor.getValue();
-    const cursor = activeView.editor.getCursor();
-    const cursorOffset = activeView.editor.posToOffset(cursor);
 
-    const list: Array<EquationSuggestion & { offset: number }> = [];
+    const list: EquationSuggestion[] = [];
     const seenLabels = new Set<string>();
 
     const mathRegex = /\$\$([\s\S]*?)\$\$/g;
@@ -896,14 +890,7 @@ export class EquationReferenceModal extends SuggestModal<EquationSuggestion> {
       if (aRecentIdx !== -1) return -1;
       if (bRecentIdx !== -1) return 1;
 
-      const aBefore = cursorOffset >= a.offset;
-      const bBefore = cursorOffset >= b.offset;
-      if (aBefore && bBefore) {
-        return (cursorOffset - a.offset) - (cursorOffset - b.offset);
-      }
-      if (aBefore) return -1;
-      if (bBefore) return 1;
-      return a.offset - b.offset;
+      return b.offset - a.offset;
     });
 
     const q = query.toLowerCase().trim();
