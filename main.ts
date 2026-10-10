@@ -653,6 +653,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
     // [式（）](#f:dc
     // [式（）](#
     // [式（）](
+    // [式 () ](#
     // (#f:
     // (eq:
     const regex = /(?:\[[^\]]*\])?\((#|\^)?(?:([^)\s\]]*:))?([^)\s\]]*)$/;
@@ -664,7 +665,6 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
     const rawPrefix = match[2] || ""; // e.g. "f:" or "eq:"
     const queryAfterColon = match[3] || "";
 
-    // Guard: ensure this is an equation reference and not arbitrary text in parentheses
     const prefixOffset = (match[1] || "").length + rawPrefix.length + queryAfterColon.length;
     const isMarkdownLink = /(?:\[[^\]]*\])\($/.test(sub.substring(0, sub.length - prefixOffset));
 
@@ -735,20 +735,9 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
       });
     }
 
-    // Sort by recency:
-    // 1. Session recently used/added labels
-    // 2. Reverse document order: the bottom-most equations in the note are always the newest added!
-    const recentList = this.plugin.recentLabels || [];
-    list.sort((a, b) => {
-      const aRecentIdx = recentList.indexOf(a.label);
-      const bRecentIdx = recentList.indexOf(b.label);
-      if (aRecentIdx !== -1 && bRecentIdx !== -1) return aRecentIdx - bRecentIdx;
-      if (aRecentIdx !== -1) return -1;
-      if (bRecentIdx !== -1) return 1;
-
-      // Pure reverse document order guarantees bottom equation (e.g. latest added) is always #1!
-      return b.offset - a.offset;
-    });
+    // Sort strictly by reverse document order:
+    // Equations closest to the bottom of the document are always the newest added!
+    list.sort((a, b) => b.offset - a.offset);
 
     let filtered = list;
     if (query.length > 0) {
@@ -826,8 +815,6 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
       line: start.line,
       ch: newCursorCh
     });
-
-    this.plugin.addRecentLabel(item.label);
   }
 }
 
@@ -882,16 +869,8 @@ export class EquationReferenceModal extends SuggestModal<EquationSuggestion> {
       });
     }
 
-    const recentList = this.plugin.recentLabels || [];
-    list.sort((a, b) => {
-      const aRecentIdx = recentList.indexOf(a.label);
-      const bRecentIdx = recentList.indexOf(b.label);
-      if (aRecentIdx !== -1 && bRecentIdx !== -1) return aRecentIdx - bRecentIdx;
-      if (aRecentIdx !== -1) return -1;
-      if (bRecentIdx !== -1) return 1;
-
-      return b.offset - a.offset;
-    });
+    // Sort strictly by reverse document order: bottom-most equations first
+    list.sort((a, b) => b.offset - a.offset);
 
     const q = query.toLowerCase().trim();
     let filtered = list;
@@ -924,7 +903,6 @@ export class EquationReferenceModal extends SuggestModal<EquationSuggestion> {
   }
 
   onChooseSuggestion(item: EquationSuggestion, evt: MouseEvent | KeyboardEvent): void {
-    this.plugin.addRecentLabel(item.label);
     this.onChoose(item.label);
   }
 }
@@ -935,19 +913,7 @@ export default class AutoEquationNumberingPlugin extends Plugin {
   statusBarItem!: HTMLElement;
   sidebarView: EquationNumberingView | null = null;
   lastActiveMarkdownView: MarkdownView | null = null;
-  recentLabels: string[] = [];
   referenceSuggest!: EquationReferenceSuggest;
-
-  addRecentLabel(label: string): void {
-    const idx = this.recentLabels.indexOf(label);
-    if (idx !== -1) {
-      this.recentLabels.splice(idx, 1);
-    }
-    this.recentLabels.unshift(label);
-    if (this.recentLabels.length > 20) {
-      this.recentLabels.pop();
-    }
-  }
 
   async onload(): Promise<void> {
     await this.loadSettings();
