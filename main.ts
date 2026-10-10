@@ -12,7 +12,8 @@ import {
   EditorSuggest,
   EditorSuggestContext,
   EditorSuggestTriggerInfo,
-  EditorPosition
+  EditorPosition,
+  SuggestModal
 } from "obsidian";
 
 interface FileSettings {
@@ -616,7 +617,7 @@ export class EquationNumberingView extends ItemView {
   }
 }
 
-interface EquationSuggestion {
+export interface EquationSuggestion {
   label: string;
   formula: string;
   tag?: string;
@@ -630,33 +631,74 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
     this.plugin = plugin;
   }
 
+  triggerSuggest(editor: Editor, file: TFile | null): void {
+    try {
+      if (typeof (this as any).trigger === "function") {
+        (this as any).trigger(editor, file, true);
+      }
+    } catch (e) {
+      console.error("Failed to trigger suggest:", e);
+    }
+  }
+
   onTrigger(cursor: EditorPosition, editor: Editor, file: TFile | null): EditorSuggestTriggerInfo | null {
     const line = editor.getLine(cursor.line);
     const sub = line.substring(0, cursor.ch);
 
-    const anchor = this.plugin.settings.anchorCharacter || "#";
-    const escapedAnchor = anchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-    // Matches e.g. [式（）](#eq: or (#eq: or [ref](#
-    const regex = new RegExp(`(?:\\[[^\\]]*\\])?\\(${escapedAnchor}([^\\s\\)\\]]*)$`);
+    // Matches e.g.:
+    // [式（）](#f:
+    // [式（）](eq:
+    // [式（）](#eq:
+    // [式（）](#f:dc
+    // [式（）](#
+    // [式（）](
+    // (#f:
+    // (eq:
+    const regex = /(?:\[[^\]]*\])?\((#|\^)?(?:([^)\s\]]*:))?([^)\s\]]*)$/;
     const match = sub.match(regex);
     if (!match) return null;
 
-    const query = match[1];
+    const hasAnchor = !!match[1];
+    const hasColon = !!match[2];
+    const rawPrefix = match[2] || ""; // e.g. "f:" or "eq:"
+    const queryAfterColon = match[3] || "";
+
+    // Guard: ensure this is an equation reference and not arbitrary text in parentheses
+    const prefixOffset = (match[1] || "").length + rawPrefix.length + queryAfterColon.length;
+    const isMarkdownLink = /(?:\[[^\]]*\])\($/.test(sub.substring(0, sub.length - prefixOffset));
+
+    if (!hasAnchor && !hasColon && !isMarkdownLink) {
+      return null;
+    }
+
+    const startCh = cursor.ch - prefixOffset;
+
     return {
       start: {
         line: cursor.line,
-        ch: cursor.ch - query.length
+        ch: startCh
       },
       end: cursor,
-      query: query
+      query: `${rawPrefix}|${queryAfterColon}`
     };
   }
 
   getSuggestions(context: EditorSuggestContext): EquationSuggestion[] {
     const content = context.editor.getValue();
-    const query = context.query.toLowerCase().trim();
     const cursorOffset = context.editor.posToOffset(context.start);
+
+    let rawPrefix = "";
+    let queryAfterColon = "";
+    if (context.query && context.query.includes("|")) {
+      const parts = context.query.split("|");
+      rawPrefix = parts[0];
+      queryAfterColon = parts[1];
+    } else {
+      queryAfterColon = context.query || "";
+    }
+
+    const query = queryAfterColon.toLowerCase().trim();
+    const typedPrefix = rawPrefix.toLowerCase().trim();
 
     const list: Array<EquationSuggestion & { offset: number }> = [];
     const seenLabels = new Set<string>();
@@ -693,10 +735,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
       });
     }
 
-    // Sort:
-    // 1. Session recently used/added labels
-    // 2. Preceding equations closest to cursor
-    // 3. Reverse document order
+    // Sort by recency (session recent -> closest preceding -> reverse document order)
     const recentList = this.plugin.recentLabels || [];
     list.sort((a, b) => {
       const aRecentIdx = recentList.indexOf(a.label);
@@ -717,10 +756,26 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
 
     let filtered = list;
     if (query.length > 0) {
-      filtered = list.filter(item => item.label.toLowerCase().includes(query));
+      filtered = list.filter(item => {
+        const lbl = item.label.toLowerCase();
+        const colonIdx = lbl.indexOf(":");
+        const namePart = colonIdx !== -1 ? lbl.substring(colonIdx + 1) : lbl;
+        return lbl.includes(query) || namePart.includes(query);
+      });
       filtered.sort((a, b) => {
         const aStarts = a.label.toLowerCase().startsWith(query);
         const bStarts = b.label.toLowerCase().startsWith(query);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+        return 0;
+      });
+    }
+
+    // Prioritize equations matching the typed prefix (e.g. "f:" or "eq:")
+    if (typedPrefix.length > 0) {
+      filtered.sort((a, b) => {
+        const aStarts = a.label.toLowerCase().startsWith(typedPrefix);
+        const bStarts = b.label.toLowerCase().startsWith(typedPrefix);
         if (aStarts && !bStarts) return -1;
         if (!aStarts && bStarts) return 1;
         return 0;
@@ -762,20 +817,128 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
     const textAfter = line.substring(actualEnd.ch);
     const hasClosingParen = textAfter.startsWith(")");
 
-    let replacement = item.label;
+    const anchor = this.plugin.settings.anchorCharacter || "#";
+    let replacement = `${anchor}${item.label}`;
     if (!hasClosingParen) {
       replacement += ")";
     }
 
     editor.replaceRange(replacement, start, actualEnd);
 
-    const newCursorCh = start.ch + item.label.length + (hasClosingParen ? 1 : 1);
+    const newCursorCh = start.ch + replacement.length + (hasClosingParen ? 1 : 0);
     editor.setCursor({
       line: start.line,
       ch: newCursorCh
     });
 
     this.plugin.addRecentLabel(item.label);
+  }
+}
+
+export class EquationReferenceModal extends SuggestModal<EquationSuggestion> {
+  plugin: AutoEquationNumberingPlugin;
+  onChoose: (label: string) => void;
+
+  constructor(app: App, plugin: AutoEquationNumberingPlugin, onChoose: (label: string) => void) {
+    super(app);
+    this.plugin = plugin;
+    this.onChoose = onChoose;
+    this.setPlaceholder("Select equation to reference... / 选择引用的公式...");
+  }
+
+  getSuggestions(query: string): EquationSuggestion[] {
+    const activeView = this.plugin.getActiveMarkdownView();
+    if (!activeView) return [];
+    const content = activeView.editor.getValue();
+    const cursor = activeView.editor.getCursor();
+    const cursorOffset = activeView.editor.posToOffset(cursor);
+
+    const list: Array<EquationSuggestion & { offset: number }> = [];
+    const seenLabels = new Set<string>();
+
+    const mathRegex = /\$\$([\s\S]*?)\$\$/g;
+    let m: RegExpExecArray | null;
+
+    while ((m = mathRegex.exec(content)) !== null) {
+      const body = m[1];
+      const offset = m.index;
+
+      const labelMatch = body.match(/(?:%\s*)?\\label\s*\{([^{}]+)\}/);
+      if (!labelMatch) continue;
+
+      const label = labelMatch[1].trim();
+      if (!label || seenLabels.has(label)) continue;
+      seenLabels.add(label);
+
+      const tagMatch = body.match(/\\tag\s*\{([^{}]+)\}/);
+      const tag = tagMatch ? tagMatch[1].trim() : undefined;
+
+      const cleanFormula = body
+        .replace(/(?:%\s*)?\\label\s*\{[^{}]*\}/g, "")
+        .replace(/\\tag\s*\{[^{}]*\}/g, "")
+        .replace(/\r?\n/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      list.push({
+        label,
+        formula: cleanFormula,
+        tag,
+        offset
+      });
+    }
+
+    const recentList = this.plugin.recentLabels || [];
+    list.sort((a, b) => {
+      const aRecentIdx = recentList.indexOf(a.label);
+      const bRecentIdx = recentList.indexOf(b.label);
+      if (aRecentIdx !== -1 && bRecentIdx !== -1) return aRecentIdx - bRecentIdx;
+      if (aRecentIdx !== -1) return -1;
+      if (bRecentIdx !== -1) return 1;
+
+      const aBefore = cursorOffset >= a.offset;
+      const bBefore = cursorOffset >= b.offset;
+      if (aBefore && bBefore) {
+        return (cursorOffset - a.offset) - (cursorOffset - b.offset);
+      }
+      if (aBefore) return -1;
+      if (bBefore) return 1;
+      return a.offset - b.offset;
+    });
+
+    const q = query.toLowerCase().trim();
+    let filtered = list;
+    if (q.length > 0) {
+      filtered = list.filter(item => {
+        const lbl = item.label.toLowerCase();
+        const colonIdx = lbl.indexOf(":");
+        const namePart = colonIdx !== -1 ? lbl.substring(colonIdx + 1) : lbl;
+        return lbl.includes(q) || namePart.includes(q);
+      });
+    }
+
+    const maxCount = Math.max(1, this.plugin.settings.suggestCount || 5);
+    return filtered.slice(0, maxCount);
+  }
+
+  renderSuggestion(item: EquationSuggestion, el: HTMLElement): void {
+    el.addClass("eqn-suggest-item");
+
+    const headerEl = el.createDiv({ cls: "eqn-suggest-header" });
+    headerEl.createSpan({ cls: "eqn-suggest-label", text: item.label });
+
+    if (item.tag) {
+      headerEl.createSpan({ cls: "eqn-suggest-tag", text: item.tag });
+    }
+
+    if (item.formula) {
+      el.createDiv({ cls: "eqn-suggest-formula", text: item.formula });
+    }
+  }
+
+  onChooseSuggestion(item: EquationSuggestion, evt: MouseEvent | KeyboardEvent): void {
+    this.plugin.addRecentLabel(item.label);
+    this.onChoose(item.label);
   }
 }
 
@@ -786,6 +949,7 @@ export default class AutoEquationNumberingPlugin extends Plugin {
   sidebarView: EquationNumberingView | null = null;
   lastActiveMarkdownView: MarkdownView | null = null;
   recentLabels: string[] = [];
+  referenceSuggest!: EquationReferenceSuggest;
 
   addRecentLabel(label: string): void {
     const idx = this.recentLabels.indexOf(label);
@@ -808,7 +972,8 @@ export default class AutoEquationNumberingPlugin extends Plugin {
       (leaf) => new EquationNumberingView(leaf, this)
     );
 
-    this.registerEditorSuggest(new EquationReferenceSuggest(this.app, this));
+    this.referenceSuggest = new EquationReferenceSuggest(this.app, this);
+    this.registerEditorSuggest(this.referenceSuggest);
 
     this.statusBarItem = this.addStatusBarItem();
     this.statusBarItem.addClass("equation-numbering-status-bar");
@@ -905,16 +1070,43 @@ export default class AutoEquationNumberingPlugin extends Plugin {
     this.addCommand({
       id: "insert-equation-reference",
       name: "Insert equation reference link ([式（）](#prefix))",
-      editorCallback: (editor: Editor) => {
+      editorCallback: (editor: Editor, view: MarkdownView) => {
         const cursor = editor.getCursor();
         const anchor = this.settings.anchorCharacter || "#";
         const prefix = this.settings.labelPrefix !== undefined ? this.settings.labelPrefix : "eq:";
         const snippet = `[式（）](${anchor}${prefix})`;
         editor.replaceRange(snippet, cursor);
-        editor.setCursor({
+        const targetCursor = {
           line: cursor.line,
           ch: cursor.ch + `[式（）](${anchor}${prefix}`.length
-        });
+        };
+        editor.setCursor(targetCursor);
+
+        // Automatically trigger suggestion popup
+        window.setTimeout(() => {
+          try {
+            if (this.referenceSuggest) {
+              this.referenceSuggest.triggerSuggest(editor, view?.file || null);
+            }
+            if ((this.app.workspace as any).editorSuggest?.trigger) {
+              (this.app.workspace as any).editorSuggest.trigger(editor, view?.file || null, true);
+            }
+          } catch (e) {
+            console.error("Trigger suggest error:", e);
+          }
+        }, 30);
+      }
+    });
+
+    this.addCommand({
+      id: "insert-equation-reference-modal",
+      name: "Insert equation reference from modal picker",
+      editorCallback: (editor: Editor, view: MarkdownView) => {
+        new EquationReferenceModal(this.app, this, (selectedLabel) => {
+          const anchor = this.settings.anchorCharacter || "#";
+          const snippet = `[式（）](${anchor}${selectedLabel})`;
+          editor.replaceSelection(snippet);
+        }).open();
       }
     });
 
