@@ -435,6 +435,10 @@ const VIEW_TYPE_EQUATION_NUMBERING = "equation-numbering-view";
 
 export class EquationNumberingView extends ItemView {
   plugin: AutoEquationNumberingPlugin;
+  lastRenderedFilePath: string | null = null;
+  lastRenderedEnabled: boolean | null = null;
+  lastRenderedFormat: string | null = null;
+  lastRenderedChapterMode: any = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: AutoEquationNumberingPlugin) {
     super(leaf);
@@ -455,7 +459,7 @@ export class EquationNumberingView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.plugin.sidebarView = this;
-    this.updateView();
+    this.updateView(true);
   }
 
   async onClose(): Promise<void> {
@@ -464,8 +468,33 @@ export class EquationNumberingView extends ItemView {
     }
   }
 
-  updateView(): void {
+  updateView(force: boolean = false): void {
+    const activeView = this.plugin.getActiveMarkdownView();
+    const currentPath = activeView?.file?.path || null;
+    const fileSettings = currentPath ? this.plugin.getFileSettings(currentPath) : null;
+    const isEnabled = fileSettings ? fileSettings.enabled : false;
+    const curFormat = fileSettings ? fileSettings.format || "default" : "default";
+    const curChapterMode = fileSettings ? fileSettings.chapterMode : false;
+
     const container = this.containerEl.children[1] as HTMLElement;
+    if (!container) return;
+
+    if (
+      !force &&
+      this.lastRenderedFilePath === currentPath &&
+      this.lastRenderedEnabled === isEnabled &&
+      this.lastRenderedFormat === curFormat &&
+      this.lastRenderedChapterMode === curChapterMode &&
+      container.children.length > 0
+    ) {
+      return;
+    }
+
+    this.lastRenderedFilePath = currentPath;
+    this.lastRenderedEnabled = isEnabled;
+    this.lastRenderedFormat = curFormat;
+    this.lastRenderedChapterMode = curChapterMode;
+
     container.empty();
     container.addClass("equation-numbering-sidebar");
 
@@ -486,8 +515,7 @@ export class EquationNumberingView extends ItemView {
     header.createEl("div", { cls: "eqn-sidebar-title", text: "Equation Numbering" });
     header.createEl("div", { cls: "eqn-sidebar-subtitle", text: "公式管理 (Side Panel)" });
 
-    const activeView = this.plugin.getActiveMarkdownView();
-    if (!activeView || !activeView.file) {
+    if (!activeView || !activeView.file || !fileSettings) {
       container.createEl("p", {
         text: "Open a markdown note to manage numbering.",
         cls: "setting-item-description eqn-centered-description"
@@ -496,8 +524,6 @@ export class EquationNumberingView extends ItemView {
     }
 
     const path = activeView.file.path;
-    const fileSettings = this.plugin.getFileSettings(path);
-    const isEnabled = fileSettings.enabled;
 
     container.createDiv({ cls: "eqn-sidebar-divider" });
 
@@ -611,8 +637,20 @@ export class EquationNumberingView extends ItemView {
       updateBtn.setAttribute("disabled", "true");
       updateBtn.addClass("eqn-btn-disabled");
     }
-    updateBtn.addEventListener("click", () => {
-      this.plugin.updateNumberingForActiveFile();
+    updateBtn.addEventListener("click", async () => {
+      updateBtn.setAttribute("disabled", "true");
+      updateBtn.addClass("mod-loading");
+      const originalText = updateBtn.innerText;
+      updateBtn.innerText = "Updating...";
+      try {
+        await this.plugin.updateNumberingForActiveFile();
+      } finally {
+        updateBtn.innerText = originalText;
+        updateBtn.removeClass("mod-loading");
+        if (isEnabled) {
+          updateBtn.removeAttribute("disabled");
+        }
+      }
     });
 
     new Setting(container)
@@ -650,6 +688,22 @@ export class EquationNumberingView extends ItemView {
           .onChange(async val => {
             const parsed = parseInt(val.trim(), 10);
             this.plugin.settings.suggestCount = !isNaN(parsed) && parsed > 0 ? parsed : 5;
+            await this.plugin.saveSettings();
+          })
+      )
+      .settingEl.addClass("eqn-sidebar-setting-item");
+
+    new Setting(container)
+      .setName("Suggest Sort Mode")
+      .addDropdown(dropdown =>
+        dropdown
+          .addOption("smart", "Smart")
+          .addOption("cursor", "Cursor proximity")
+          .addOption("recent_edit", "Recent edits")
+          .addOption("bottom_up", "Document bottom-up")
+          .setValue(this.plugin.settings.suggestSortMode || "smart")
+          .onChange(async val => {
+            this.plugin.settings.suggestSortMode = val as any;
             await this.plugin.saveSettings();
           })
       )
@@ -702,6 +756,21 @@ export class EquationNumberingView extends ItemView {
             await this.plugin.saveSettings();
           });
       })
+      .settingEl.addClass("eqn-sidebar-setting-item");
+
+    new Setting(container)
+      .setName("Unify Reference Format")
+      .addToggle(toggle =>
+        toggle
+          .setValue(!!this.plugin.settings.unifyReferenceFormat)
+          .onChange(async val => {
+            this.plugin.settings.unifyReferenceFormat = val;
+            await this.plugin.saveSettings();
+            if (isEnabled) {
+              await this.plugin.updateNumberingForActiveFile();
+            }
+          })
+      )
       .settingEl.addClass("eqn-sidebar-setting-item");
   }
 }
@@ -1063,7 +1132,21 @@ export default class AutoEquationNumberingPlugin extends Plugin {
     });
 
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => {
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (leaf && leaf.view instanceof MarkdownView && (leaf.view as MarkdownView).file) {
+          this.lastActiveMarkdownView = leaf.view as MarkdownView;
+        }
+        this.updateStatusBar();
+        if (this.sidebarView) this.sidebarView.updateView();
+      })
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        const active = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (active && active.file) {
+          this.lastActiveMarkdownView = active;
+        }
         this.updateStatusBar();
         if (this.sidebarView) this.sidebarView.updateView();
       })
@@ -1292,11 +1375,31 @@ export default class AutoEquationNumberingPlugin extends Plugin {
 
   getActiveMarkdownView(): MarkdownView | null {
     const active = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (active) {
+    if (active && active.file) {
       this.lastActiveMarkdownView = active;
       return active;
     }
-    if (this.lastActiveMarkdownView && this.app.workspace.getLeavesOfType("markdown").some(leaf => leaf.view === this.lastActiveMarkdownView)) {
+    const activeLeaf = (this.app.workspace as any).activeLeaf;
+    if (activeLeaf && activeLeaf.view instanceof MarkdownView && (activeLeaf.view as MarkdownView).file) {
+      this.lastActiveMarkdownView = activeLeaf.view as MarkdownView;
+      return activeLeaf.view as MarkdownView;
+    }
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile) {
+      const match = this.app.workspace
+        .getLeavesOfType("markdown")
+        .find(leaf => (leaf.view as MarkdownView).file?.path === activeFile.path);
+      if (match) {
+        const view = match.view as MarkdownView;
+        this.lastActiveMarkdownView = view;
+        return view;
+      }
+    }
+    if (
+      this.lastActiveMarkdownView &&
+      this.lastActiveMarkdownView.file &&
+      this.app.workspace.getLeavesOfType("markdown").some(leaf => leaf.view === this.lastActiveMarkdownView)
+    ) {
       return this.lastActiveMarkdownView;
     }
     const leaves = this.app.workspace.getLeavesOfType("markdown");
@@ -1504,8 +1607,8 @@ class EquationNumberingSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName("Reuse number for duplicate equations")
-      .setDesc("When enabled, identical display equations will share the same equation number.")
+      .setName("Reuse number for duplicate equations / 重复公式去重复用编号")
+      .setDesc("When enabled, identical display equations will share the same equation number. / 开启后，同一篇笔记中完全相同的独立公式将复用同一个编号。")
       .addToggle(toggle =>
         toggle.setValue(this.plugin.settings.reuseNumberForDuplicates).onChange(async val => {
           this.plugin.settings.reuseNumberForDuplicates = val;
@@ -1514,8 +1617,8 @@ class EquationNumberingSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Anchor character")
-      .setDesc("Prefix character used for internal equation links, e.g. '#' in [Eq. (1)](#eq:label).")
+      .setName("Anchor character / 引用锚点符号")
+      .setDesc("Prefix character used for internal equation links, e.g. '#' in [Eq. (1)](#eq:label). / 正文公式引用链接中使用的前缀符号，例如 [Eq. (1)](#eq:label) 中的 '#'。")
       .addText(text =>
         text
           .setPlaceholder("#")
@@ -1527,8 +1630,8 @@ class EquationNumberingSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Equation label prefix")
-      .setDesc("Default prefix for equation labels (e.g. 'eq:' or 'f:'). Default is 'eq:'.")
+      .setName("Equation label prefix / 公式标签前缀")
+      .setDesc("Default prefix for equation labels (e.g. 'eq:' or 'f:'). Default is 'eq:'. / 公式标签的默认前缀（如 'eq:' 或 'f:'），默认为 'eq:'。")
       .addText(text =>
         text
           .setPlaceholder("eq:")
@@ -1540,8 +1643,8 @@ class EquationNumberingSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Number of label suggestions")
-      .setDesc("Maximum number of recent equation labels to display in the autocomplete popup (default: 5).")
+      .setName("Number of label suggestions / 候选提示数量")
+      .setDesc("Maximum number of recent equation labels to display in the autocomplete popup (default: 5). / 引用自动完成弹窗中最多展示的公式候选数量（默认：5）。")
       .addText(text =>
         text
           .setPlaceholder("5")
