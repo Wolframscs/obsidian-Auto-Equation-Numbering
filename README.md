@@ -33,15 +33,20 @@ When writing Markdown notes with a large number of mathematical equations, you o
 - **Non-Intrusive Design**: Ignores inline equations (`$...$`) and code blocks (like ` ``` ` blocks) to ensure your source code remains safe and untouched.
 - **Dynamic Updates**: When you insert, delete, or rearrange equations, simply update the numbering with one click, and all equation tags will be recalculated and updated instantly.
 
-##### 2. Smart Cross-Reference Synchronization
+##### 2. Smart Cross-Reference Synchronization & Customizable Templates (Updated in v0.2.0)
 
-Supports LaTeX-style equation label declarations and in-text links:
+Supports LaTeX-style equation label declarations and in-text links with customizable display templates:
 
 - **Define Labels**: Use `\label{label_name}` inside a display equation to declare a unique identifier.
 - **In-text Reference**: Link to the identifier in your text using Markdown link syntax, e.g., `[Eq. ()](#eq:model)`.
-- **Automatic Filling & Sync**:
-  - **Auto-Fill**: On the first update, the plugin automatically fills the parentheses with the correct equation number (e.g., auto-completing to `[Eq. (1)](#eq:model)`).
-  - **Dynamic Sync**: If equation order changes and causes number changes, updating the note will sync all references automatically.
+- **Customizable Templates (Dropdown + Text Input)**:
+  - `Eq. ()` $\rightarrow$ `[Eq. (2)](#eq:mlr)` (International scientific paper standard)
+  - `Equation ()` $\rightarrow$ `[Equation (2)](#eq:mlr)` (Full-word standard)
+  - `()` $\rightarrow$ `[(2)](#eq:mlr)` (Parentheses only)
+  - `式（）` $\rightarrow$ `[式（2）](#eq:mlr)` (Chinese academic standard)
+  - `xxx ()` $\rightarrow$ `[xxx (2)](#eq:mlr)` (Arbitrary custom prefix)
+- **Prefix Word Preservation on Renumbering**: When equations are reordered (e.g. formula 2 becomes 3), the prefix (`Eq.`, `Equation`, `式`, or custom `xxx`) is completely preserved and only the number inside parentheses `(3)` is updated dynamically.
+- **Optional Unification Toggle**: Enable "Unify existing reference formats" in settings to convert all existing citations across the note into your chosen template upon update.
 
 ##### 3. Equation Reference Autocomplete & Smart Candidate Ranking (New in v0.1.9)
 
@@ -201,15 +206,20 @@ npm run dev
 - **免干扰设计**：不对行内公式（`$...$`）和 Markdown 代码块（如 ` ``` ` 块内代码）进行任何处理，保证源码安全。
 - **动态更新**：插入、删除公式或调整段落顺序后，只需一键更新，所有公式编号均会自动重新计算与排列。
 
-##### 2. 正文交叉引用智能同步
+##### 2. 正文交叉引用智能同步与引用模板定制 (v0.2.0 新特性)
 
-支持 LaTeX 风格的公式标签声明与正文内的链接引用：
+支持 LaTeX 风格的公式标签声明与正文内的链接引用，并支持灵活定制引用前缀模板：
 
 - **定义标签**：在显示公式内部使用 `\label{label_name}` 声明唯一标识符。
-- **正文引用**：在正文中使用 Markdown 链接指向该标识符，例如 `[式（）](#eq:model)`。
-- **自动填充与同步**：
-  - **自动填入**：在首次更新时，插件会自动将最新的公式编号填入括号内（如自动补全为 `[式（1）](#eq:model)`）。
-  - **同步变化**：当公式顺序变化导致编号变更时，一键即可让正文中的所有引用链接同步更新，绝无遗漏。
+- **正文引用**：在正文中使用 Markdown 链接指向该标识符，例如 `[Eq. ()](#eq:model)` 或 `[式（）](#eq:model)`。
+- **模板下拉预设与自定义输入**：
+  - `Eq. ()` $\rightarrow$ `[Eq. (2)](#eq:mlr)`（国际期刊英文标准缩写）
+  - `Equation ()` $\rightarrow$ `[Equation (2)](#eq:mlr)`（英文全称规范）
+  - `()` $\rightarrow$ `[(2)](#eq:mlr)`（纯括号极简风格）
+  - `式（）` $\rightarrow$ `[式（2）](#eq:mlr)`（中文学术规范）
+  - `xxx ()` $\rightarrow$ `[xxx (2)](#eq:mlr)`（支持任意自定义前缀词）
+- **编号重排时完整保留前缀词**：当因公式增删导致编号发生变化时（如由 2 变为 3），前缀词（如 `Eq.`、`Equation`、`式` 或自定义的 `xxx`）将完整保留，仅括号内的数字动态更新为 `(3)`。
+- **统一正文现有前缀（可选开关）**：开启后，更新时可将文档中所有已有引用统一规范化为当前选中的模板样式，方便批量格式统一。
 
 ##### 3. 公式引用自动补全与智能候选排序 (v0.1.9 新特性)
 

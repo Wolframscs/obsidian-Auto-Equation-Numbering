@@ -28,6 +28,9 @@ interface EquationNumberingSettings {
   labelPrefix: string;
   suggestCount: number;
   suggestSortMode: "smart" | "cursor" | "recent_edit" | "bottom_up";
+  referenceFormatType: "chinese" | "eq" | "equation" | "parens" | "custom";
+  referenceFormatTemplate: string;
+  unifyReferenceFormat: boolean;
   enabledFiles: Record<string, FileSettings | boolean>;
 }
 
@@ -37,6 +40,9 @@ const DEFAULT_SETTINGS: EquationNumberingSettings = {
   labelPrefix: "eq:",
   suggestCount: 5,
   suggestSortMode: "smart",
+  referenceFormatType: "chinese",
+  referenceFormatTemplate: "式（）",
+  unifyReferenceFormat: false,
   enabledFiles: {}
 };
 
@@ -152,12 +158,37 @@ function numberedBody(body: string, formattedNum: string): string {
   return `${trimmed}\\tag{${formattedNum}}`;
 }
 
+export function getTemplateDisplayText(template: string, num: string): string {
+  let cleanNum = (num || "").trim();
+  if (
+    (cleanNum.startsWith("(") && cleanNum.endsWith(")")) ||
+    (cleanNum.startsWith("（") && cleanNum.endsWith("）"))
+  ) {
+    cleanNum = cleanNum.substring(1, cleanNum.length - 1).trim();
+  }
+  let tmpl = (template || "式（）").trim();
+  if (tmpl.startsWith("[") && tmpl.endsWith("]")) {
+    tmpl = tmpl.substring(1, tmpl.length - 1).trim();
+  }
+  if (/（\s*）/.test(tmpl)) {
+    return tmpl.replace(/（\s*）/, `（${cleanNum}）`);
+  } else if (/\(\s*\)/.test(tmpl)) {
+    return tmpl.replace(/\(\s*\)/, `(${cleanNum})`);
+  } else if (tmpl.includes("（") || tmpl.includes("）")) {
+    return `${tmpl}（${cleanNum}）`;
+  } else {
+    return `${tmpl}(${cleanNum})`;
+  }
+}
+
 export function renumberText(
   text: string,
   reuseNumberForDuplicates: boolean,
   format: string = "default",
   anchorCharacter: string = "#",
-  chapterMode: boolean | string = false
+  chapterMode: boolean | string = false,
+  unifyReferenceFormat: boolean = false,
+  referenceFormatTemplate: string = "式（）"
 ): { text: string; equationCount: number; uniqueCount: number } {
   const seen = new Map<string, number>();
   const labelMap = new Map<string, string>();
@@ -323,31 +354,38 @@ export function renumberText(
         }
 
         let updatedDisplay = displayText;
-        if (/（\s*）/.test(displayText)) {
-          updatedDisplay = displayText.replace(/（\s*）/, `（${cleanFormattedNum}）`);
-        } else if (/\(\s*\)/.test(displayText)) {
-          updatedDisplay = displayText.replace(/\(\s*\)/, `(${cleanFormattedNum})`);
-        } else if (/（[^（）]*\d+[^（）]*）/.test(displayText)) {
-          updatedDisplay = displayText.replace(
-            /（([^（）]*?)(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?([^（）]*?)）/,
-            `（$1${cleanFormattedNum}$2）`
-          );
-        } else if (/\([^()]*\d+[^()]*\)/.test(displayText)) {
-          updatedDisplay = displayText.replace(
-            /\(([^()]*?)(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?([^()]*?)\)/,
-            `($1${cleanFormattedNum}$2)`
-          );
-        } else if (/（[^（）]+）/.test(displayText)) {
-          updatedDisplay = displayText.replace(/（[^（）]+）/, `（${cleanFormattedNum}）`);
-        } else if (/\([^()]+\)/.test(displayText)) {
-          updatedDisplay = displayText.replace(/\([^()]+\)/, `(${cleanFormattedNum})`);
-        } else if (/(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?(?=[^0-9a-zA-Z]*$)/.test(displayText)) {
-          updatedDisplay = displayText.replace(
-            /(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?(?=[^0-9a-zA-Z]*$)/,
-            cleanFormattedNum
-          );
-        } else if (displayText.trim() === "" || displayText === "?") {
-          updatedDisplay = formattedNum;
+
+        if (unifyReferenceFormat && referenceFormatTemplate) {
+          updatedDisplay = getTemplateDisplayText(referenceFormatTemplate, cleanFormattedNum);
+        } else {
+          if (/（\s*）/.test(displayText)) {
+            updatedDisplay = displayText.replace(/（\s*）/, `（${cleanFormattedNum}）`);
+          } else if (/\(\s*\)/.test(displayText)) {
+            updatedDisplay = displayText.replace(/\(\s*\)/, `(${cleanFormattedNum})`);
+          } else if (/（[^（）]*\d+[^（）]*）/.test(displayText)) {
+            updatedDisplay = displayText.replace(
+              /（([^（）]*?)(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?([^（）]*?)）/,
+              `（$1${cleanFormattedNum}$2）`
+            );
+          } else if (/\([^()]*\d+[^()]*\)/.test(displayText)) {
+            updatedDisplay = displayText.replace(
+              /\(([^()]*?)(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?([^()]*?)\)/,
+              `($1${cleanFormattedNum}$2)`
+            );
+          } else if (/（[^（）]+）/.test(displayText)) {
+            updatedDisplay = displayText.replace(/（[^（）]+）/, `（${cleanFormattedNum}）`);
+          } else if (/\([^()]+\)/.test(displayText)) {
+            updatedDisplay = displayText.replace(/\([^()]+\)/, `(${cleanFormattedNum})`);
+          } else if (/(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?(?=[^0-9a-zA-Z]*$)/.test(displayText)) {
+            updatedDisplay = displayText.replace(
+              /(?:[a-zA-Z0-9]+[-.])*(?:[a-zA-Z]-)?\d+(?:\.\d+)?(?=[^0-9a-zA-Z]*$)/,
+              cleanFormattedNum
+            );
+          } else if (displayText.trim() === "" || displayText === "?") {
+            updatedDisplay = referenceFormatTemplate
+              ? getTemplateDisplayText(referenceFormatTemplate, cleanFormattedNum)
+              : formattedNum;
+          }
         }
 
         return `[${updatedDisplay}](${anchor}${labelKey})`;
@@ -615,6 +653,55 @@ export class EquationNumberingView extends ItemView {
             await this.plugin.saveSettings();
           })
       )
+      .settingEl.addClass("eqn-sidebar-setting-item");
+
+    let sidebarTemplateText: any = null;
+    new Setting(container)
+      .setName("Ref Format")
+      .addDropdown(dropdown => {
+        dropdown
+          .addOption("chinese", "式（）")
+          .addOption("eq", "Eq. ()")
+          .addOption("equation", "Equation ()")
+          .addOption("parens", "()")
+          .addOption("custom", "自定义")
+          .setValue(this.plugin.settings.referenceFormatType || "chinese")
+          .onChange(async val => {
+            this.plugin.settings.referenceFormatType = val as any;
+            if (val === "chinese") {
+              this.plugin.settings.referenceFormatTemplate = "式（）";
+            } else if (val === "eq") {
+              this.plugin.settings.referenceFormatTemplate = "Eq. ()";
+            } else if (val === "equation") {
+              this.plugin.settings.referenceFormatTemplate = "Equation ()";
+            } else if (val === "parens") {
+              this.plugin.settings.referenceFormatTemplate = "()";
+            }
+            if (sidebarTemplateText) {
+              sidebarTemplateText.setValue(this.plugin.settings.referenceFormatTemplate);
+            }
+            await this.plugin.saveSettings();
+          });
+      })
+      .addText(text => {
+        sidebarTemplateText = text;
+        text
+          .setPlaceholder("式（） 或 Eq. () 或 xxx ()")
+          .setValue(this.plugin.settings.referenceFormatTemplate || "式（）")
+          .onChange(async val => {
+            const trimmed = val.trim();
+            this.plugin.settings.referenceFormatTemplate = trimmed || "式（）";
+            if (
+              trimmed !== "式（）" &&
+              trimmed !== "Eq. ()" &&
+              trimmed !== "Equation ()" &&
+              trimmed !== "()"
+            ) {
+              this.plugin.settings.referenceFormatType = "custom";
+            }
+            await this.plugin.saveSettings();
+          });
+      })
       .settingEl.addClass("eqn-sidebar-setting-item");
   }
 }
@@ -937,11 +1024,12 @@ export default class AutoEquationNumberingPlugin extends Plugin {
         const cursor = editor.getCursor();
         const anchor = this.settings.anchorCharacter || "#";
         const prefix = this.settings.labelPrefix !== undefined ? this.settings.labelPrefix : "eq:";
-        const snippet = `[式（）](${anchor}${prefix})`;
+        const template = this.settings.referenceFormatTemplate || "式（）";
+        const snippet = `[${template}](${anchor}${prefix})`;
         editor.replaceRange(snippet, cursor);
         const targetCursor = {
           line: cursor.line,
-          ch: cursor.ch + `[式（）](${anchor}${prefix}`.length
+          ch: cursor.ch + `[${template}](${anchor}${prefix}`.length
         };
         editor.setCursor(targetCursor);
 
@@ -967,7 +1055,8 @@ export default class AutoEquationNumberingPlugin extends Plugin {
       editorCallback: (editor: Editor, view: MarkdownView) => {
         new EquationReferenceModal(this.app, this, (selectedLabel) => {
           const anchor = this.settings.anchorCharacter || "#";
-          const snippet = `[式（）](${anchor}${selectedLabel})`;
+          const template = this.settings.referenceFormatTemplate || "式（）";
+          const snippet = `[${template}](${anchor}${selectedLabel})`;
           editor.replaceSelection(snippet);
         }).open();
       }
@@ -1326,7 +1415,9 @@ export default class AutoEquationNumberingPlugin extends Plugin {
       this.settings.reuseNumberForDuplicates,
       format,
       this.settings.anchorCharacter,
-      chapterMode
+      chapterMode,
+      this.settings.unifyReferenceFormat,
+      this.settings.referenceFormatTemplate
     );
     if (result.text === original) return;
 
@@ -1366,7 +1457,9 @@ export default class AutoEquationNumberingPlugin extends Plugin {
         this.settings.reuseNumberForDuplicates,
         fileSettings.format || "default",
         this.settings.anchorCharacter,
-        fileSettings.chapterMode !== undefined ? fileSettings.chapterMode : false
+        fileSettings.chapterMode !== undefined ? fileSettings.chapterMode : false,
+        this.settings.unifyReferenceFormat,
+        this.settings.referenceFormatTemplate
       );
       if (result.text !== before) {
         await this.app.vault.modify(file, result.text);
@@ -1472,6 +1565,67 @@ class EquationNumberingSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.suggestSortMode || "smart")
           .onChange(async val => {
             this.plugin.settings.suggestSortMode = val as any;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    let tabTemplateText: any = null;
+    new Setting(containerEl)
+      .setName("Equation reference template / 正文公式引用模板")
+      .setDesc("Template format for in-text equation references (e.g. 'Eq. ()', 'Equation ()', '()', '式（）', or custom 'xxx ()') / 正文中插入和格式化公式引用的模板样式")
+      .addDropdown(dropdown => {
+        dropdown
+          .addOption("chinese", "式（） (中文默认: 式（1）)")
+          .addOption("eq", "Eq. () (英文标准: Eq. (1))")
+          .addOption("equation", "Equation () (英文全称: Equation (1))")
+          .addOption("parens", "() (纯括号: (1))")
+          .addOption("custom", "自定义 (Custom: 例如 xxx ())")
+          .setValue(this.plugin.settings.referenceFormatType || "chinese")
+          .onChange(async val => {
+            this.plugin.settings.referenceFormatType = val as any;
+            if (val === "chinese") {
+              this.plugin.settings.referenceFormatTemplate = "式（）";
+            } else if (val === "eq") {
+              this.plugin.settings.referenceFormatTemplate = "Eq. ()";
+            } else if (val === "equation") {
+              this.plugin.settings.referenceFormatTemplate = "Equation ()";
+            } else if (val === "parens") {
+              this.plugin.settings.referenceFormatTemplate = "()";
+            }
+            if (tabTemplateText) {
+              tabTemplateText.setValue(this.plugin.settings.referenceFormatTemplate);
+            }
+            await this.plugin.saveSettings();
+          });
+      })
+      .addText(text => {
+        tabTemplateText = text;
+        text
+          .setPlaceholder("式（） 或 Eq. () 或 xxx ()")
+          .setValue(this.plugin.settings.referenceFormatTemplate || "式（）")
+          .onChange(async val => {
+            const trimmed = val.trim();
+            this.plugin.settings.referenceFormatTemplate = trimmed || "式（）";
+            if (
+              trimmed !== "式（）" &&
+              trimmed !== "Eq. ()" &&
+              trimmed !== "Equation ()" &&
+              trimmed !== "()"
+            ) {
+              this.plugin.settings.referenceFormatType = "custom";
+            }
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("Unify existing reference formats / 统一现有引用前缀格式")
+      .setDesc("When updating, standardize all existing references in the note to match the template above instead of keeping their individual existing prefixes. / 更新时将正文中所有已有引用的前缀统一转换为上方选定的模板样式（如将已有的 [式（1）] 统一替换为 [Eq. (1)] 或 [xxx (1)]），而不是保留各自原有的前缀。")
+      .addToggle(toggle =>
+        toggle
+          .setValue(!!this.plugin.settings.unifyReferenceFormat)
+          .onChange(async val => {
+            this.plugin.settings.unifyReferenceFormat = val;
             await this.plugin.saveSettings();
           })
       );
