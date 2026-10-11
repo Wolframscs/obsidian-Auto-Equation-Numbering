@@ -27,6 +27,7 @@ interface EquationNumberingSettings {
   anchorCharacter: string;
   labelPrefix: string;
   suggestCount: number;
+  suggestSortMode: "smart" | "cursor" | "recent_edit" | "bottom_up";
   enabledFiles: Record<string, FileSettings | boolean>;
 }
 
@@ -35,6 +36,7 @@ const DEFAULT_SETTINGS: EquationNumberingSettings = {
   anchorCharacter: "#",
   labelPrefix: "eq:",
   suggestCount: 5,
+  suggestSortMode: "smart",
   enabledFiles: {}
 };
 
@@ -686,6 +688,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
 
   getSuggestions(context: EditorSuggestContext): EquationSuggestion[] {
     const content = context.editor.getValue();
+    const cursorOffset = context.editor.posToOffset(context.start);
 
     let rawPrefix = "";
     let queryAfterColon = "";
@@ -697,78 +700,7 @@ export class EquationReferenceSuggest extends EditorSuggest<EquationSuggestion> 
       queryAfterColon = context.query || "";
     }
 
-    const query = queryAfterColon.toLowerCase().trim();
-    const typedPrefix = rawPrefix.toLowerCase().trim();
-
-    const list: EquationSuggestion[] = [];
-    const seenLabels = new Set<string>();
-
-    const mathRegex = /\$\$([\s\S]*?)\$\$/g;
-    let m: RegExpExecArray | null;
-
-    while ((m = mathRegex.exec(content)) !== null) {
-      const body = m[1];
-      const offset = m.index;
-
-      const labelMatch = body.match(/(?:%\s*)?\\label\s*\{([^{}]+)\}/);
-      if (!labelMatch) continue;
-
-      const label = labelMatch[1].trim();
-      if (!label || seenLabels.has(label)) continue;
-      seenLabels.add(label);
-
-      const tagMatch = body.match(/\\tag\s*\{([^{}]+)\}/);
-      const tag = tagMatch ? tagMatch[1].trim() : undefined;
-
-      const cleanFormula = body
-        .replace(/(?:%\s*)?\\label\s*\{[^{}]*\}/g, "")
-        .replace(/\\tag\s*\{[^{}]*\}/g, "")
-        .replace(/\r?\n/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      list.push({
-        label,
-        formula: cleanFormula,
-        tag,
-        offset
-      });
-    }
-
-    // Sort strictly by reverse document order:
-    // Equations closest to the bottom of the document are always the newest added!
-    list.sort((a, b) => b.offset - a.offset);
-
-    let filtered = list;
-    if (query.length > 0) {
-      filtered = list.filter(item => {
-        const lbl = item.label.toLowerCase();
-        const colonIdx = lbl.indexOf(":");
-        const namePart = colonIdx !== -1 ? lbl.substring(colonIdx + 1) : lbl;
-        return lbl.includes(query) || namePart.includes(query);
-      });
-      filtered.sort((a, b) => {
-        const aStarts = a.label.toLowerCase().startsWith(query);
-        const bStarts = b.label.toLowerCase().startsWith(query);
-        if (aStarts && !bStarts) return -1;
-        if (!aStarts && bStarts) return 1;
-        return b.offset - a.offset;
-      });
-    }
-
-    // Prioritize equations matching the typed prefix (e.g. "f:" or "eq:")
-    if (typedPrefix.length > 0) {
-      filtered.sort((a, b) => {
-        const aStarts = a.label.toLowerCase().startsWith(typedPrefix);
-        const bStarts = b.label.toLowerCase().startsWith(typedPrefix);
-        if (aStarts && !bStarts) return -1;
-        if (!aStarts && bStarts) return 1;
-        return b.offset - a.offset;
-      });
-    }
-
-    const maxCount = Math.max(1, this.plugin.settings.suggestCount || 5);
-    return filtered.slice(0, maxCount);
+    return this.plugin.getEquationSuggestions(content, cursorOffset, queryAfterColon, rawPrefix);
   }
 
   renderSuggestion(item: EquationSuggestion, el: HTMLElement): void {
@@ -833,58 +765,10 @@ export class EquationReferenceModal extends SuggestModal<EquationSuggestion> {
     const activeView = this.plugin.getActiveMarkdownView();
     if (!activeView) return [];
     const content = activeView.editor.getValue();
+    const cursor = activeView.editor.getCursor();
+    const cursorOffset = activeView.editor.posToOffset(cursor);
 
-    const list: EquationSuggestion[] = [];
-    const seenLabels = new Set<string>();
-
-    const mathRegex = /\$\$([\s\S]*?)\$\$/g;
-    let m: RegExpExecArray | null;
-
-    while ((m = mathRegex.exec(content)) !== null) {
-      const body = m[1];
-      const offset = m.index;
-
-      const labelMatch = body.match(/(?:%\s*)?\\label\s*\{([^{}]+)\}/);
-      if (!labelMatch) continue;
-
-      const label = labelMatch[1].trim();
-      if (!label || seenLabels.has(label)) continue;
-      seenLabels.add(label);
-
-      const tagMatch = body.match(/\\tag\s*\{([^{}]+)\}/);
-      const tag = tagMatch ? tagMatch[1].trim() : undefined;
-
-      const cleanFormula = body
-        .replace(/(?:%\s*)?\\label\s*\{[^{}]*\}/g, "")
-        .replace(/\\tag\s*\{[^{}]*\}/g, "")
-        .replace(/\r?\n/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      list.push({
-        label,
-        formula: cleanFormula,
-        tag,
-        offset
-      });
-    }
-
-    // Sort strictly by reverse document order: bottom-most equations first
-    list.sort((a, b) => b.offset - a.offset);
-
-    const q = query.toLowerCase().trim();
-    let filtered = list;
-    if (q.length > 0) {
-      filtered = list.filter(item => {
-        const lbl = item.label.toLowerCase();
-        const colonIdx = lbl.indexOf(":");
-        const namePart = colonIdx !== -1 ? lbl.substring(colonIdx + 1) : lbl;
-        return lbl.includes(q) || namePart.includes(q);
-      });
-    }
-
-    const maxCount = Math.max(1, this.plugin.settings.suggestCount || 5);
-    return filtered.slice(0, maxCount);
+    return this.plugin.getEquationSuggestions(content, cursorOffset, query, "");
   }
 
   renderSuggestion(item: EquationSuggestion, el: HTMLElement): void {
@@ -914,6 +798,8 @@ export default class AutoEquationNumberingPlugin extends Plugin {
   sidebarView: EquationNumberingView | null = null;
   lastActiveMarkdownView: MarkdownView | null = null;
   referenceSuggest!: EquationReferenceSuggest;
+  lastKnownLabels: Set<string> = new Set<string>();
+  recentlyCreatedLabels: string[] = [];
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -927,6 +813,30 @@ export default class AutoEquationNumberingPlugin extends Plugin {
 
     this.referenceSuggest = new EquationReferenceSuggest(this.app, this);
     this.registerEditorSuggest(this.referenceSuggest);
+
+    // Track recently created or edited labels in real time
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (editor) => {
+        try {
+          const content = editor.getValue();
+          const mathRegex = /\$\$([\s\S]*?)\$\$/g;
+          let m: RegExpExecArray | null;
+          const currentLabels = new Set<string>();
+          while ((m = mathRegex.exec(content)) !== null) {
+            const lm = m[1].match(/(?:%\s*)?\\label\s*\{([^{}]+)\}/);
+            if (lm) currentLabels.add(lm[1].trim());
+          }
+          for (const lbl of currentLabels) {
+            if (!this.lastKnownLabels.has(lbl)) {
+              this.recentlyCreatedLabels = [lbl, ...this.recentlyCreatedLabels.filter(x => x !== lbl)].slice(0, 20);
+            }
+          }
+          this.lastKnownLabels = currentLabels;
+        } catch (e) {
+          // ignore
+        }
+      })
+    );
 
     this.statusBarItem = this.addStatusBarItem();
     this.statusBarItem.addClass("equation-numbering-status-bar");
@@ -1106,6 +1016,176 @@ export default class AutoEquationNumberingPlugin extends Plugin {
       }
       this.updateStatusBar();
     });
+  }
+
+  getEquationSuggestions(
+    content: string,
+    cursorOffset: number | null,
+    queryAfterColon: string,
+    rawPrefix: string
+  ): EquationSuggestion[] {
+    const query = (queryAfterColon || "").toLowerCase().trim();
+    const typedPrefix = (rawPrefix || "").toLowerCase().trim();
+
+    const list: EquationSuggestion[] = [];
+    const seenLabels = new Set<string>();
+    const currentLabelsInDoc = new Set<string>();
+
+    const mathRegex = /\$\$([\s\S]*?)\$\$/g;
+    let m: RegExpExecArray | null;
+
+    while ((m = mathRegex.exec(content)) !== null) {
+      const body = m[1];
+      const offset = m.index;
+
+      const labelMatch = body.match(/(?:%\s*)?\\label\s*\{([^{}]+)\}/);
+      if (!labelMatch) continue;
+
+      const label = labelMatch[1].trim();
+      if (!label || seenLabels.has(label)) continue;
+      seenLabels.add(label);
+      currentLabelsInDoc.add(label);
+
+      const tagMatch = body.match(/\\tag\s*\{([^{}]+)\}/);
+      const tag = tagMatch ? tagMatch[1].trim() : undefined;
+
+      const cleanFormula = body
+        .replace(/(?:%\s*)?\\label\s*\{[^{}]*\}/g, "")
+        .replace(/\\tag\s*\{[^{}]*\}/g, "")
+        .replace(/\r?\n/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      list.push({
+        label,
+        formula: cleanFormula,
+        tag,
+        offset
+      });
+    }
+
+    // Register newly detected labels into recentlyCreatedLabels
+    for (const lbl of currentLabelsInDoc) {
+      if (!this.lastKnownLabels.has(lbl)) {
+        this.recentlyCreatedLabels = [lbl, ...this.recentlyCreatedLabels.filter(x => x !== lbl)];
+      }
+    }
+    this.recentlyCreatedLabels = this.recentlyCreatedLabels.filter(lbl => currentLabelsInDoc.has(lbl));
+    if (this.recentlyCreatedLabels.length > 20) {
+      this.recentlyCreatedLabels = this.recentlyCreatedLabels.slice(0, 20);
+    }
+    this.lastKnownLabels = currentLabelsInDoc;
+
+    // Scan referenced labels in markdown links (excluding the active link being typed)
+    const referencedLabels = new Set<string>();
+    const refRegex = /(?:\[[^\]]*\])?\((?:#|\^)?([^)\s\]]+)\)/g;
+    let refMatch: RegExpExecArray | null;
+    while ((refMatch = refRegex.exec(content)) !== null) {
+      if (cursorOffset !== null && Math.abs(refMatch.index - cursorOffset) < 50 && refMatch[1].endsWith(":")) {
+        continue;
+      }
+      const refTarget = refMatch[1].trim();
+      referencedLabels.add(refTarget);
+      const colonIdx = refTarget.indexOf(":");
+      if (colonIdx !== -1) {
+        referencedLabels.add(refTarget.substring(colonIdx + 1));
+      }
+    }
+
+    const sortMode = this.settings.suggestSortMode || "smart";
+
+    if (sortMode === "bottom_up") {
+      list.sort((a, b) => b.offset - a.offset);
+    } else if (sortMode === "cursor") {
+      if (cursorOffset !== null) {
+        list.sort((a, b) => {
+          const aBefore = a.offset <= cursorOffset;
+          const bBefore = b.offset <= cursorOffset;
+          if (aBefore && !bBefore) return -1;
+          if (!aBefore && bBefore) return 1;
+          if (aBefore && bBefore) {
+            return (cursorOffset - a.offset) - (cursorOffset - b.offset);
+          }
+          return (a.offset - cursorOffset) - (b.offset - cursorOffset);
+        });
+      } else {
+        list.sort((a, b) => b.offset - a.offset);
+      }
+    } else if (sortMode === "recent_edit") {
+      list.sort((a, b) => {
+        const aRecentIdx = this.recentlyCreatedLabels.indexOf(a.label);
+        const bRecentIdx = this.recentlyCreatedLabels.indexOf(b.label);
+        const aScore = aRecentIdx !== -1 ? aRecentIdx : 9999;
+        const bScore = bRecentIdx !== -1 ? bRecentIdx : 9999;
+        if (aScore !== bScore) return aScore - bScore;
+        return b.offset - a.offset;
+      });
+    } else {
+      // "smart" mode: Tier 1 (recently created) -> Tier 2 (unreferenced) -> Tier 3 (cursor proximity) -> Tier 4 (bottom up)
+      list.sort((a, b) => {
+        // 1. Recently edited / created in session
+        const aRecentIdx = this.recentlyCreatedLabels.indexOf(a.label);
+        const bRecentIdx = this.recentlyCreatedLabels.indexOf(b.label);
+        const aIsRecent = aRecentIdx !== -1;
+        const bIsRecent = bRecentIdx !== -1;
+        if (aIsRecent && !bIsRecent) return -1;
+        if (!aIsRecent && bIsRecent) return 1;
+        if (aIsRecent && bIsRecent && aRecentIdx !== bRecentIdx) {
+          return aRecentIdx - bRecentIdx;
+        }
+
+        // 2. Unreferenced in document
+        const aIsUnref = !referencedLabels.has(a.label) && !referencedLabels.has(a.label.replace(/^[^:]*:/, ""));
+        const bIsUnref = !referencedLabels.has(b.label) && !referencedLabels.has(b.label.replace(/^[^:]*:/, ""));
+        if (aIsUnref && !bIsUnref) return -1;
+        if (!aIsUnref && bIsUnref) return 1;
+
+        // 3. Proximity to cursor (closest preceding cursor first)
+        if (cursorOffset !== null) {
+          const aBefore = a.offset <= cursorOffset;
+          const bBefore = b.offset <= cursorOffset;
+          if (aBefore && !bBefore) return -1;
+          if (!aBefore && bBefore) return 1;
+          if (aBefore && bBefore) {
+            return (cursorOffset - a.offset) - (cursorOffset - b.offset);
+          }
+          return (a.offset - cursorOffset) - (b.offset - cursorOffset);
+        }
+
+        // 4. Reverse document order
+        return b.offset - a.offset;
+      });
+    }
+
+    let filtered = list;
+    if (query.length > 0) {
+      filtered = list.filter(item => {
+        const lbl = item.label.toLowerCase();
+        const colonIdx = lbl.indexOf(":");
+        const namePart = colonIdx !== -1 ? lbl.substring(colonIdx + 1) : lbl;
+        return lbl.includes(query) || namePart.includes(query);
+      });
+      filtered.sort((a, b) => {
+        const aStarts = a.label.toLowerCase().startsWith(query);
+        const bStarts = b.label.toLowerCase().startsWith(query);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+        return 0;
+      });
+    }
+
+    if (typedPrefix.length > 0) {
+      filtered.sort((a, b) => {
+        const aStarts = a.label.toLowerCase().startsWith(typedPrefix);
+        const bStarts = b.label.toLowerCase().startsWith(typedPrefix);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+        return 0;
+      });
+    }
+
+    const maxCount = Math.max(1, this.settings.suggestCount || 5);
+    return filtered.slice(0, maxCount);
   }
 
   onunload(): void {}
@@ -1376,6 +1456,22 @@ class EquationNumberingSettingTab extends PluginSettingTab {
           .onChange(async val => {
             const parsed = parseInt(val.trim(), 10);
             this.plugin.settings.suggestCount = !isNaN(parsed) && parsed > 0 ? parsed : 5;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Candidate suggestion sorting mode / 候选公式排序规则")
+      .setDesc("Sorting strategy for equation candidates in the autocomplete popup / 自动完成弹窗中候选公式的排序策略")
+      .addDropdown(dropdown =>
+        dropdown
+          .addOption("smart", "智能推荐 (Smart: 新增/未引用/光标就近)")
+          .addOption("cursor", "光标就近 (Cursor: 自光标向上优先)")
+          .addOption("recent_edit", "最近编辑 (Recent edit: 最新编辑的标签优先)")
+          .addOption("bottom_up", "文档末尾 (Bottom-up: 纯文档自底向上)")
+          .setValue(this.plugin.settings.suggestSortMode || "smart")
+          .onChange(async val => {
+            this.plugin.settings.suggestSortMode = val as any;
             await this.plugin.saveSettings();
           })
       );
